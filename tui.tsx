@@ -17,6 +17,20 @@ interface Sample {
   timestamp: number
 }
 
+interface ModelEntry {
+  name: string
+  tokens: number
+  cost: number
+}
+
+interface ModelAgg {
+  key: string
+  name: string
+  tokens: number
+  cost: number
+  tps: number
+}
+
 interface PartDeltaEvent {
   type: "message.part.delta"
   properties: {
@@ -28,17 +42,11 @@ interface PartDeltaEvent {
   }
 }
 
-interface ModelEntry {
-  name: string
-  tokens: number
-  cost: number
-}
-
 const LIVE_STALE_MS = 1500
 const SAMPLE_WINDOW_MS = 5000
 const SINGLE_SAMPLE_MIN_MS = 250
 const SINGLE_SAMPLE_MAX_MS = 1000
-const MAX_ENTRIES = 4
+const SIDEBAR_ORDER = 140
 
 const tui: TuiPlugin = async (api, _options, _meta) => {
   const byMessage = new Map<string, MessageInfo>()
@@ -167,20 +175,20 @@ const tui: TuiPlugin = async (api, _options, _meta) => {
     return `${(n / 1_000_000).toFixed(1)}M`
   }
 
-  function formatCost(cost: number): string {
+  function costStr(cost: number): string {
     if (cost <= 0) return ""
-    if (cost < 1) return `·$${cost.toFixed(3)}`
-    return `·$${cost.toFixed(2)}`
+    if (cost < 1) return `$${cost.toFixed(3)}`
+    return `$${cost.toFixed(2)}`
   }
 
-  function formatTps(value: number): string {
+  function tpsStr(value: number): string {
     if (value < 0) return ""
-    if (value < 10) return `·${value.toFixed(2)}tps`
-    if (value < 100) return `·${value.toFixed(1)}tps`
-    return `·${Math.round(value)}tps`
+    if (value < 10) return `${value.toFixed(2)}tps`
+    if (value < 100) return `${value.toFixed(1)}tps`
+    return `${Math.round(value)}tps`
   }
 
-  function computeStats(root: string): string {
+  function computeEntries(root: string): { models: ModelAgg[]; totalTokens: number; totalCost: number } {
     for (const info of api.state.session.messages(root)) {
       if (info.role !== "assistant") continue
       if (info.summary) continue
@@ -216,28 +224,66 @@ const tui: TuiPlugin = async (api, _options, _meta) => {
       activeByModel.set(key, active)
     }
 
-    const entries = [...perModel.entries()].sort((a, b) => b[1].tokens - a[1].tokens)
-    const parts: string[] = []
-    for (const [key, entry] of entries.slice(0, MAX_ENTRIES)) {
-      const tps = calcTps(activeByModel.get(key) ?? [])
-      parts.push(`${entry.name} ${formatTokens(entry.tokens)}${formatCost(entry.cost)}${formatTps(tps)}`)
+    const models: ModelAgg[] = []
+    let totalTokens = 0
+    let totalCost = 0
+    for (const [key, entry] of perModel) {
+      models.push({
+        key,
+        name: entry.name,
+        tokens: entry.tokens,
+        cost: entry.cost,
+        tps: calcTps(activeByModel.get(key) ?? []),
+      })
+      totalTokens += entry.tokens
+      totalCost += entry.cost
     }
-    if (entries.length > MAX_ENTRIES) parts.push(`+${entries.length - MAX_ENTRIES}`)
-    return parts.join("  ")
+    models.sort((a, b) => b.tokens - a.tokens)
+    return { models, totalTokens, totalCost }
   }
 
   api.slots.register({
+    order: SIDEBAR_ORDER,
     slots: {
-      session_prompt_right(ctx, props) {
+      sidebar_content(ctx, props) {
         const stats = createMemo(() => {
           version()
           tick()
-          return computeStats(props.session_id)
+          return computeEntries(props.session_id)
         })
 
+        const heading = createMemo(() => {
+          const { models, totalTokens, totalCost } = stats()
+          if (models.length === 0) return "Models"
+          const cost = costStr(totalCost)
+          return `Models${cost ? `  ${cost}` : ""}  ${formatTokens(totalTokens)} tok`
+        })
+
+        const lines = createMemo(() =>
+          stats().models.map((m) => {
+            const cost = costStr(m.cost)
+            const tps = tpsStr(m.tps)
+            return `${m.name}  ${formatTokens(m.tokens)}${cost ? `  ${cost}` : ""}${tps ? `  ·${tps}` : ""}`
+          }),
+        )
+
+        const text = ctx.theme.current.text
         const textMuted = ctx.theme.current.textMuted
 
-        return <text fg={textMuted}>{stats()}</text>
+        return (
+          <box flexDirection="column" gap={0}>
+            <text fg={text}>
+              <b>{heading()}</b>
+            </text>
+            <box flexDirection="column" gap={0}>
+              {lines().map((line) => (
+                <text fg={textMuted} wrapMode="none">
+                  {line}
+                </text>
+              ))}
+            </box>
+          </box>
+        )
       },
     },
   })

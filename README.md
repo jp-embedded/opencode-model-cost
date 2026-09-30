@@ -1,16 +1,20 @@
 # opencode-model-cost
 
-Live per-model tokens, cost, and TPS in the [OpenCode](https://opencode.ai) TUI.
+Live per-model tokens, cost, and TPS in the [OpenCode](https://opencode.ai) TUI sidebar.
 
-Shows the model split of the current session tree next to the prompt, updated in real time:
+Shows the model split of the current session tree in the right sidebar, one
+model per line, updated in real time:
 
 ```
-glm-5.3 89k·$2.10·12.3tps  glm-5.3-flash 12k·$0.09  local 34k
+Models  $2.19  135k tok
+glm-5.3  89k  $2.10  ·12.3tps
+glm-5.3-flash  12k  $0.09
+local  34k
 ```
 
-Each entry shows the model, its cumulative token count (input + output + reasoning),
-its cumulative cost (hidden when $0), and a live tokens-per-second meter while that
-model is actively streaming.
+The heading shows the totals; each line shows the model, its cumulative token
+count (input + output + reasoning), its cumulative cost (hidden when $0), and
+a live tokens-per-second meter while that model is actively streaming.
 
 ## Why
 
@@ -50,8 +54,8 @@ Then restart OpenCode.
 - Groups cumulative tokens and cost per model
 - Tracks streaming text deltas to compute a per-model live TPS (5-second rolling
   window, byte-based token estimate)
-- Renders into the `session_prompt_right` slot next to the prompt, in muted theme
-  color
+- Renders a block in the right sidebar of the session view, in theme colors,
+  one line per model
 
 ## Limitations
 

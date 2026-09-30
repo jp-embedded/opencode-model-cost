@@ -1,7 +1,7 @@
 {
   "name": "opencode-model-cost",
   "version": "0.1.0",
-  "description": "Live per-model tokens, cost, and TPS in the OpenCode TUI - see the model split of your session tree next to the prompt.",
+  "description": "Live per-model tokens, cost, and TPS in the OpenCode TUI sidebar - one line per model for the whole session tree.",
   "type": "module",
   "exports": {
     "./tui": "./tui.tsx"
