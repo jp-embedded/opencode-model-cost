@@ -2,6 +2,8 @@
 
 Live per-model tokens, cost, and TPS in the [OpenCode](https://opencode.ai) TUI sidebar.
 
+![OpenCode sidebar with the per-model stats block](https://raw.githubusercontent.com/jp-embedded/opencode-model-cost/main/screenshot.png)
+
 Shows the model split of the current session tree in the right sidebar, one
 model per line, updated in real time:
 
