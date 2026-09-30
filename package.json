@@ -31,5 +31,13 @@
     "tps"
   ],
   "author": "Jan Pedersen",
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jp-embedded/opencode-model-cost.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jp-embedded/opencode-model-cost/issues"
+  },
+  "homepage": "https://github.com/jp-embedded/opencode-model-cost#readme"
 }
