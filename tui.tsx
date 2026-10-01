@@ -29,6 +29,7 @@ interface ModelAgg {
   tokens: number
   cost: number
   tps: number
+  running: boolean
 }
 
 interface PartDeltaEvent {
@@ -51,6 +52,7 @@ const SIDEBAR_ORDER = 140
 const tui: TuiPlugin = async (api, _options, _meta) => {
   const byMessage = new Map<string, MessageInfo>()
   const samples: Sample[] = []
+  const lastTps = new Map<string, number>()
 
   const [version, setVersion] = createSignal(0)
   const [tick, setTick] = createSignal(0)
@@ -228,12 +230,16 @@ const tui: TuiPlugin = async (api, _options, _meta) => {
     let totalTokens = 0
     let totalCost = 0
     for (const [key, entry] of perModel) {
+      const live = calcTps(activeByModel.get(key) ?? [])
+      const running = live >= 0
+      if (running) lastTps.set(key, live)
       models.push({
         key,
         name: entry.name,
         tokens: entry.tokens,
         cost: entry.cost,
-        tps: calcTps(activeByModel.get(key) ?? []),
+        tps: running ? live : (lastTps.get(key) ?? -1),
+        running,
       })
       totalTokens += entry.tokens
       totalCost += entry.cost
@@ -263,12 +269,16 @@ const tui: TuiPlugin = async (api, _options, _meta) => {
           stats().models.map((m) => {
             const cost = costStr(m.cost)
             const tps = tpsStr(m.tps)
-            return `${m.name}  ${formatTokens(m.tokens)}${cost ? `  ${cost}` : ""}${tps ? `  ·${tps}` : ""}`
+            return {
+              text: `${m.name}  ${formatTokens(m.tokens)}${cost ? `  ${cost}` : ""}${tps ? `  ·${tps}` : ""}`,
+              running: m.running,
+            }
           }),
         )
 
         const text = ctx.theme.current.text
         const textMuted = ctx.theme.current.textMuted
+        const accent = ctx.theme.current.accent
 
         return (
           <box flexDirection="column" gap={0}>
@@ -277,8 +287,8 @@ const tui: TuiPlugin = async (api, _options, _meta) => {
             </text>
             <box flexDirection="column" gap={0}>
               {lines().map((line) => (
-                <text fg={textMuted} wrapMode="none">
-                  {line}
+                <text fg={line.running ? accent : textMuted} wrapMode="none">
+                  {line.text}
                 </text>
               ))}
             </box>

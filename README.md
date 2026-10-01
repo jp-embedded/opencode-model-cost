@@ -16,7 +16,8 @@ local  34k
 
 The heading shows the totals; each line shows the model, its cumulative token
 count (input + output + reasoning), its cumulative cost (hidden when $0), and
-a live tokens-per-second meter while that model is actively streaming.
+its tokens-per-second rate — the last run's rate is retained between runs, and
+the currently streaming model's line is highlighted.
 
 ## Why
 
@@ -55,7 +56,8 @@ Then restart OpenCode.
   plus all subagent child sessions (attributed via `parentID`)
 - Groups cumulative tokens and cost per model
 - Tracks streaming text deltas to compute a per-model live TPS (5-second rolling
-  window, byte-based token estimate)
+  window, byte-based token estimate); the last run's rate stays visible and the
+  streaming model's line is highlighted
 - Renders a block in the right sidebar of the session view, in theme colors,
   one line per model
 
