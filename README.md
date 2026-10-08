@@ -9,7 +9,7 @@ model per line, updated in real time:
 
 ```
 Models  $2.19  135k tok
-glm-5.3  89k  $2.10  ·12.3tps
+glm-5.3  89k  $2.10  ·~12.3tps
 glm-5.3-flash  12k  $0.09
 local  34k
 ```
@@ -28,24 +28,23 @@ down per model, live, so you can see the split while you work.
 
 ## Requirements
 
-- OpenCode `>= 1.3.14`
+- OpenCode `>= 2.0.24` (use plugin 0.2.x for OpenCode v1)
 - The TUI (the plugin does nothing in CLI/web mode)
 
 ## Install
 
-Add the plugin to your TUI config (`~/.config/opencode/tui.json` or the `tui.json`
-of your project):
+Add the plugin to your global CLI config (`~/.config/opencode/cli.json`):
 
 ```json
 {
-  "plugin": ["opencode-model-cost"]
+  "plugins": ["opencode-model-cost"]
 }
 ```
 
 Or install via the CLI:
 
 ```bash
-opencode plugin opencode-model-cost
+opencode plugin add opencode-model-cost
 ```
 
 Then restart OpenCode.
@@ -63,11 +62,12 @@ Then restart OpenCode.
 
 ## Limitations
 
-- Subagent sessions from previous TUI runs only appear once they stream again;
-  the viewed session's own history is always included
+- TPS is available only for responses streamed during the current TUI run;
+  restored session history still includes all models' tokens and cost
 - Token counts exclude cache reads/writes to keep the display readable; use
   `opencode stats` for full accounting
-- TPS is an estimate based on streamed text bytes (~5 bytes per token)
+- TPS is an estimate based on streamed text/reasoning bytes (~5 bytes per token),
+  marked with `~` in the display
 
 ## License
 

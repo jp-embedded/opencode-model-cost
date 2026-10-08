@@ -1,6 +1,7 @@
 /** @jsxImportSource @opentui/solid */
-import { createSignal, createMemo } from "solid-js"
-import type { TuiPlugin } from "@opencode-ai/plugin/tui"
+import { createSignal, createMemo, createEffect } from "solid-js"
+import { Plugin } from "@opencode/plugin/tui"
+import type { SessionMessageInfo, TokenUsageInfo } from "@opencode/client"
 
 interface MessageInfo {
   sessionID: string
@@ -32,27 +33,18 @@ interface ModelAgg {
   running: boolean
 }
 
-interface PartDeltaEvent {
-  type: "message.part.delta"
-  properties: {
-    sessionID: string
-    messageID: string
-    partID: string
-    field: string
-    delta: string
-  }
-}
-
 const LIVE_STALE_MS = 1500
 const SAMPLE_WINDOW_MS = 5000
 const SINGLE_SAMPLE_MIN_MS = 250
 const SINGLE_SAMPLE_MAX_MS = 1000
-const SIDEBAR_ORDER = 140
-
-const tui: TuiPlugin = async (api, _options, _meta) => {
+function setup(api: Plugin.Context) {
   const byMessage = new Map<string, MessageInfo>()
   const samples: Sample[] = []
   const lastTps = new Map<string, number>()
+  const hydratedRoots = new Set<string>()
+  const hydratingRoots = new Set<string>()
+  const rootBySession = new Map<string, string>()
+  let disposed = false
 
   const [version, setVersion] = createSignal(0)
   const [tick, setTick] = createSignal(0)
@@ -63,14 +55,66 @@ const tui: TuiPlugin = async (api, _options, _meta) => {
   }
 
   function inTree(sessionID: string, root: string): boolean {
+    if (rootBySession.get(sessionID) === root) return true
     const seen = new Set<string>()
     let id: string | undefined = sessionID
     while (typeof id === "string" && !seen.has(id)) {
       if (id === root) return true
       seen.add(id)
-      id = api.state.session.get(id)?.parentID
+      id = api.data.session.get(id)?.parentID
     }
     return false
+  }
+
+  function addMessage(sessionID: string, info: SessionMessageInfo) {
+    if (info.type !== "assistant") return
+    // A history request can race a live step-ended event. Do not replace final
+    // usage with the older, incomplete message returned by that request.
+    if (!info.tokens && byMessage.has(info.id)) return
+    byMessage.set(info.id, {
+      sessionID,
+      providerID: info.model.providerID,
+      modelID: info.model.id,
+      tokens: info.tokens ? info.tokens.input + info.tokens.output + info.tokens.reasoning : 0,
+      cost: info.cost ?? 0,
+    })
+  }
+
+  async function hydrateTree(root: string) {
+    if (hydratedRoots.has(root) || hydratingRoots.has(root)) return
+    hydratingRoots.add(root)
+
+    try {
+      const queue = [root]
+      const seen = new Set<string>()
+      while (queue.length > 0 && !disposed) {
+        const sessionID = queue.shift()!
+        if (seen.has(sessionID)) continue
+        seen.add(sessionID)
+        rootBySession.set(sessionID, root)
+
+        let cursor: string | undefined
+        do {
+          const messages = await api.client.message.list({ sessionID, limit: 100, ...(cursor ? { cursor } : { order: "asc" as const }) })
+          if (disposed) return
+          for (const message of messages.data) addMessage(sessionID, message)
+          if (messages.data.length === 0) break
+          cursor = messages.cursor.next ?? undefined
+        } while (cursor)
+        cursor = undefined
+        do {
+          const children = await api.client.session.list({ parentID: sessionID, limit: 100, ...(cursor ? { cursor } : { order: "asc" as const }) })
+          if (disposed) return
+          for (const child of children.data) queue.push(child.id)
+          if (children.data.length === 0) break
+          cursor = children.cursor.next ?? undefined
+        } while (cursor)
+      }
+      hydratedRoots.add(root)
+      setVersion((v) => v + 1)
+    } finally {
+      hydratingRoots.delete(root)
+    }
   }
 
   function dropSamples(match: (sample: Sample) => boolean) {
@@ -81,49 +125,52 @@ const tui: TuiPlugin = async (api, _options, _meta) => {
     if (samples.length !== before) setVersion((v) => v + 1)
   }
 
-  const unsubUpdated = api.event.on("message.updated", (evt) => {
-    const info = evt.properties.info
-    if (info.role !== "assistant") return
-    if (info.summary) return
-    byMessage.set(info.id, {
-      sessionID: info.sessionID,
-      providerID: info.providerID,
-      modelID: info.modelID,
-      tokens: info.tokens.input + info.tokens.output + info.tokens.reasoning,
-      cost: info.cost,
+  const unsubStarted = api.data.on("session.step.started", ({ data }) => {
+    byMessage.set(data.assistantMessageID, {
+      sessionID: data.sessionID,
+      providerID: data.model.providerID,
+      modelID: data.model.id,
+      tokens: 0,
+      cost: 0,
     })
-    if (info.time.completed) dropSamples((s) => s.messageID === info.id)
     setVersion((v) => v + 1)
   })
 
-  const unsubRemoved = api.event.on("message.removed", (evt) => {
-    if (byMessage.delete(evt.properties.messageID)) setVersion((v) => v + 1)
+  function finishStep(data: { sessionID: string; assistantMessageID: string; tokens?: TokenUsageInfo; cost?: number }) {
+    const info = byMessage.get(data.assistantMessageID)
+    if (info && data.tokens) {
+      info.tokens = data.tokens.input + data.tokens.output + data.tokens.reasoning
+      info.cost = data.cost ?? 0
+    }
+    dropSamples((s) => s.messageID === data.assistantMessageID)
+    setVersion((v) => v + 1)
+  }
+  const unsubEnded = api.data.on("session.step.ended", ({ data }) => finishStep(data))
+  const unsubFailed = api.data.on("session.step.failed", ({ data }) => finishStep(data))
+  const unsubCreated = api.data.on("session.created", () => {
+    hydratedRoots.clear()
+    setVersion((v) => v + 1)
   })
 
-  const unsubDelta = api.event.on("message.part.delta" as unknown as "message.part.delta", (evt: PartDeltaEvent) => {
-    const { sessionID, messageID, field } = evt.properties
-    if (!sessionID || !messageID) return
-    if (field !== "text") return
-    if (!byMessage.has(messageID)) return
-    if (api.state.session.status(sessionID)?.type === "idle") return
-    const deltaText = evt.properties.delta
-    if (!deltaText || typeof deltaText !== "string") return
+  function delta(data: { sessionID: string; assistantMessageID: string; delta: string }) {
+    const { sessionID, assistantMessageID: messageID } = data
+    if (!byMessage.has(messageID)) {
+      const message = api.data.session.message.get(sessionID, messageID)
+      if (message) addMessage(sessionID, message)
+    }
+    if (!byMessage.has(messageID) || !data.delta) return
     samples.push({
       messageID,
       sessionID,
-      tokens: estimateTokens(deltaText),
+      tokens: estimateTokens(data.delta),
       timestamp: Date.now(),
     })
     setVersion((v) => v + 1)
-  })
-
-  const unsubPartUpdated = api.event.on("message.part.updated", (evt) => {
-    const part = evt.properties.part
-    if (part.type !== "tool") return
-    const state = part.state
-    if (state.status === "running" || state.status === "completed" || state.status === "error") {
-      dropSamples((s) => s.sessionID === part.sessionID)
-    }
+  }
+  const unsubDelta = api.data.on("session.text.delta", ({ data }) => delta(data))
+  const unsubReasoning = api.data.on("session.reasoning.delta", ({ data }) => delta(data))
+  const unsubTool = api.data.on("session.tool.called", ({ data }) => {
+    dropSamples((s) => s.sessionID === data.sessionID)
   })
 
   const interval = setInterval(() => {
@@ -131,14 +178,6 @@ const tui: TuiPlugin = async (api, _options, _meta) => {
     dropSamples((s) => s.timestamp < cutoff)
     setTick((t) => t + 1)
   }, 1000)
-
-  api.lifecycle.onDispose(() => {
-    unsubUpdated()
-    unsubRemoved()
-    unsubDelta()
-    unsubPartUpdated()
-    clearInterval(interval)
-  })
 
   function shortName(modelID: string): string {
     const base = modelID.split("/").pop() ?? modelID
@@ -191,16 +230,8 @@ const tui: TuiPlugin = async (api, _options, _meta) => {
   }
 
   function computeEntries(root: string): { models: ModelAgg[]; totalTokens: number; totalCost: number } {
-    for (const info of api.state.session.messages(root)) {
-      if (info.role !== "assistant") continue
-      if (info.summary) continue
-      byMessage.set(info.id, {
-        sessionID: info.sessionID,
-        providerID: info.providerID,
-        modelID: info.modelID,
-        tokens: info.tokens.input + info.tokens.output + info.tokens.reasoning,
-        cost: info.cost,
-      })
+    for (const sessionID of new Set([root, ...api.data.session.family(root)])) {
+      for (const info of api.data.session.message.list(sessionID)) addMessage(sessionID, info)
     }
 
     const perModel = new Map<string, ModelEntry>()
@@ -248,14 +279,20 @@ const tui: TuiPlugin = async (api, _options, _meta) => {
     return { models, totalTokens, totalCost }
   }
 
-  api.slots.register({
-    order: SIDEBAR_ORDER,
-    slots: {
-      sidebar_content(ctx, props) {
+  const unslot = api.ui.slot({
+    append: "sidebar.content",
+    render(props) {
+        createEffect(() => {
+          version()
+          void hydrateTree(props.sessionID).catch((error) => {
+            if (!disposed) api.ui.toast.show({ message: `Model usage: ${String(error)}`, variant: "error" })
+          })
+        })
+
         const stats = createMemo(() => {
           version()
           tick()
-          return computeEntries(props.session_id)
+          return computeEntries(props.sessionID)
         })
 
         const heading = createMemo(() => {
@@ -270,15 +307,15 @@ const tui: TuiPlugin = async (api, _options, _meta) => {
             const cost = costStr(m.cost)
             const tps = tpsStr(m.tps)
             return {
-              text: `${m.name}  ${formatTokens(m.tokens)}${cost ? `  ${cost}` : ""}${tps ? `  ·${tps}` : ""}`,
+               text: `${m.name}  ${formatTokens(m.tokens)}${cost ? `  ${cost}` : ""}${tps ? `  ·~${tps}` : ""}`,
               running: m.running,
             }
           }),
         )
 
-        const text = ctx.theme.current.text
-        const textMuted = ctx.theme.current.textMuted
-        const accent = ctx.theme.current.accent
+        const text = api.theme.text.base
+        const textMuted = api.theme.text.muted
+        const accent = api.theme.text.feedback.info.base
 
         return (
           <box flexDirection="column" gap={0}>
@@ -294,12 +331,23 @@ const tui: TuiPlugin = async (api, _options, _meta) => {
             </box>
           </box>
         )
-      },
     },
   })
+  return () => {
+    disposed = true
+    unslot()
+    unsubStarted()
+    unsubEnded()
+    unsubFailed()
+    unsubCreated()
+    unsubDelta()
+    unsubReasoning()
+    unsubTool()
+    clearInterval(interval)
+  }
 }
 
-export default {
+export default Plugin.define({
   id: "opencode-model-cost",
-  tui,
-}
+  setup,
+})
